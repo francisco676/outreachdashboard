@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>rallyup · outreach performance</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500&family=Instrument+Serif:ital@1&display=swap" />
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; }
+    body {
+      font-family: Inter, sans-serif;
+      background: #f7f8fb;
+      color: #0b1020;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    button { font-family: inherit; }
+    table { border-collapse: collapse; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .spin { animation: spin 1s linear infinite; transform-origin: center; }
+  </style>
+
+  <!-- React + Recharts via jsdelivr (better CORS than unpkg) -->
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/react@18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/prop-types@15.8.1/prop-types.min.js"></script>
+  <script crossorigin src="https://cdn.jsdelivr.net/npm/recharts@2.10.3/umd/Recharts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useMemo } = React;
+    const { BarChart, Bar, XAxis, YAxis, ResponsiveContainer, Tooltip, Legend, CartesianGrid } = Recharts;
+
+    // ---------- constants ----------
+    const FRANCISCO_ID = "137cf33a-a6c4-436e-b88c-76f9ad185034";
+    const ALEC_ID = "259d4030-3af4-4936-a6c0-3d7c34c70cd1";
+
+    const ACTIVE_STAGES = new Set([
+      "Contacted", "Follow Up 1", "Follow Up 2", "Follow Up 3", "Follow Up 4", "Nurture"
+    ]);
+
+    const STAGE_ORDER = [
+      "Reconnect Needed", "Contacted", "Follow Up 1", "Follow Up 2", "Follow Up 3",
+      "Follow Up 4", "Nurture", "Cadence Complete", "Responded", "Booked a Call", "Proposal", "Declined"
+    ];
+
+    const STAGE_CATEGORY = {
+      "Reconnect Needed": "neutral",
+      "Contacted": "active", "Follow Up 1": "active", "Follow Up 2": "active",
+      "Follow Up 3": "active", "Follow Up 4": "active", "Nurture": "active",
+      "Cadence Complete": "dead", "Declined": "dead",
+      "Responded": "converted", "Booked a Call": "converted", "Proposal": "converted"
+    };
+
+    const CAT_COLOR = {
+      active: "#3d68f5", converted: "#0b1020", dead: "#d4d4d8", neutral: "#9ca3af"
+    };
+
+    const C = {
+      blue: "#3d68f5", blueDark: "#2a3ad8", yellow: "#DDFF4D",
+      ink: "#0b1020", gray: "#6b7280", bg: "#ffffff", bgSoft: "#f7f8fb", border: "#e5e7eb"
+    };
+
+    // ---------- helpers ----------
+    function startOfWeek(date) {
+      const d = new Date(date);
+      const day = d.getDay();
+      const diff = day === 0 ? -6 : 1 - day;
+      const start = new Date(d);
+      start.setDate(d.getDate() + diff);
+      start.setHours(0, 0, 0, 0);
+      return start;
+    }
+    function startOfMonth(date) { return new Date(date.getFullYear(), date.getMonth(), 1); }
+    function startOfQuarter(date) { return new Date(date.getFullYear(), Math.floor(date.getMonth() / 3) * 3, 1); }
+
+    function parseEntryDate(entry) {
+      if (entry.outreach_date) {
+        const d = new Date(entry.outreach_date);
+        if (!isNaN(d.getTime())) return d;
+      }
+      if (entry.created_at) {
+        const m = entry.created_at.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (m) return new Date(`${m[1]}-${m[2]}-${m[3]}`);
+      }
+      return null;
+    }
+    function fmtDate(d) { return d.toLocaleDateString("en-US", { month: "short", day: "numeric" }); }
+    function pct(n, d) { return !d ? 0 : (n / d) * 100; }
+    function fmtPct(p) { return `${p.toFixed(1)}%`; }
+
+    // The `sent` checkbox in attio is unreliable. derive contact from stage.
+    function isContacted(entry) {
+      if (entry.sent) return true;
+      if (!entry.stage) return false;
+      return entry.stage !== "Reconnect Needed";
+    }
+    const RESPONDED_STAGES = new Set(["Responded", "Booked a Call", "Proposal", "Declined"]);
+    const BOOKED_STAGES = new Set(["Booked a Call", "Proposal"]);
+    function isResponse(entry) {
+      if (entry.response) return true;
+      return RESPONDED_STAGES.has(entry.stage);
+    }
+    function isBooked(entry) {
+      if (entry.meeting_booked) return true;
+      return BOOKED_STAGES.has(entry.stage);
+    }
+    function isDeclined(entry) {
+      return entry.stage === "Declined";
+    }
+
+    // ---------- data fetching ----------
+    const CACHE_KEY = "outreach_dashboard_cache_v1";
+
+    function loadCache() {
+      try {
+        const raw = localStorage.getItem(CACHE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw);
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function saveCache(entries, timestamp) {
+      try {
+        localStorage.setItem(CACHE_KEY, JSON.stringify({
+          entries, timestamp: timestamp || new Date().toISOString()
+        }));
+      } catch (e) {
+        console.error("cache save failed", e);
+      }
+    }
+
+    async function fetchAllEntries(forceFresh = false) {
+      const url = forceFresh ? "/api/leads?fresh=1" : "/api/leads";
+      const response = await fetch(url);
+      if (!response.ok) {
+        const text = await response.text();
+        throw new Error(`api ${response.status}: ${text.slice(0, 300)}`);
+      }
+      const data = await response.json();
+      if (data.error) throw new Error(data.error + (data.detail ? `: ${data.detail}` : ""));
+      return { entries: data.entries || [], cache: data.cache, timestamp: data.timestamp };
+    }
+
+    // ---------- icons (inline so no extra CDN load) ----------
+    const RefreshIcon = ({ size = 16, className = "" }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+        <path d="M16 16h5v5" />
+      </svg>
+    );
+    const AlertIcon = ({ size = 20, style }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style}>
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+    );
+    const LoaderIcon = ({ size = 16, className = "", style }) => (
+      <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className} style={style}>
+        <line x1="12" y1="2" x2="12" y2="6" />
+        <line x1="12" y1="18" x2="12" y2="22" />
+        <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+        <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+        <line x1="2" y1="12" x2="6" y2="12" />
+        <line x1="18" y1="12" x2="22" y2="12" />
+        <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+        <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+      </svg>
+    );
+
+    // ---------- atoms ----------
+    function Pill({ active, onClick, children }) {
+      return (
+        <button onClick={onClick} style={{
+          borderRadius: 999, padding: "8px 16px", fontSize: 14, fontWeight: 500,
+          border: `1px solid ${active ? C.ink : C.border}`,
+          background: active ? C.ink : C.bg, color: active ? C.bg : C.ink,
+          fontFamily: "Inter, sans-serif", cursor: "pointer", transition: "all 0.15s"
+        }}>{children}</button>
+      );
+    }
+
+    function Eyebrow({ children }) {
+      return (
+        <div style={{
+          fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+          letterSpacing: "0.12em", textTransform: "uppercase", color: C.gray
+        }}>{children}</div>
+      );
+    }
+
+    function Card({ children }) {
+      return (
+        <div style={{
+          background: C.bg, border: `1px solid ${C.border}`,
+          borderRadius: 12, padding: 20
+        }}>{children}</div>
+      );
+    }
+
+    function KpiCard({ label, value, sub, accent, highlight }) {
+      return (
+        <div style={{
+          background: highlight ? C.yellow : C.bg,
+          border: `1px solid ${highlight ? C.yellow : C.border}`,
+          borderRadius: 12, padding: 20, position: "relative", overflow: "hidden"
+        }}>
+          {accent && !highlight && (
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: 3, background: accent }} />
+          )}
+          <Eyebrow>{label}</Eyebrow>
+          <div style={{
+            fontFamily: "Inter, sans-serif", fontWeight: 800, fontSize: 36,
+            color: C.ink, lineHeight: 1.1, marginTop: 6
+          }}>{value}</div>
+          {sub && (
+            <div style={{ fontSize: 12, color: C.gray, marginTop: 4 }}>{sub}</div>
+          )}
+        </div>
+      );
+    }
+
+    const thStyle = {
+      textAlign: "left", fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+      letterSpacing: "0.12em", textTransform: "uppercase", color: "#6b7280",
+      fontWeight: 500, padding: "10px 8px"
+    };
+    const tdStyle = { padding: "12px 8px", fontSize: 13, color: "#0b1020", fontFamily: "Inter" };
+
+    function LegendDot({ color, label }) {
+      return (
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <div style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+          <span>{label}</span>
+        </div>
+      );
+    }
+
+    function BreakdownCard({ title, rows, winLabel }) {
+      return (
+        <Card>
+          <Eyebrow>{title} · {winLabel}</Eyebrow>
+          <table style={{ width: "100%", marginTop: 16 }}>
+            <thead>
+              <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                <th style={thStyle}></th>
+                <th style={thStyle}>volume</th>
+                <th style={thStyle}>contacted</th>
+                <th style={thStyle}>resp</th>
+                <th style={thStyle}>book</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(r => (
+                <tr key={r.key} style={{ borderBottom: `1px solid ${C.border}` }}>
+                  <td style={tdStyle}>{r.key.toLowerCase()}</td>
+                  <td style={tdStyle}>{r.volume}</td>
+                  <td style={tdStyle}>{r.sent}</td>
+                  <td style={{ ...tdStyle, fontWeight: 600 }}>{fmtPct(r.responseRate)}</td>
+                  <td style={{ ...tdStyle, fontWeight: 600, color: r.bookRate > 0 ? C.blue : C.ink }}>{fmtPct(r.bookRate)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Card>
+      );
+    }
+
+    function ComparisonRow({ label, f, a, suffix, format, higherIsBetter }) {
+      const fVal = format === "pct" ? f.toFixed(1) : f;
+      const aVal = format === "pct" ? a.toFixed(1) : a;
+      const tied = f === a;
+      const fLeads = !tied && (higherIsBetter ? f > a : f < a);
+      const aLeads = !tied && (higherIsBetter ? a > f : a < f);
+      return (
+        <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+          <td style={tdStyle}>{label}</td>
+          <td style={{ ...tdStyle, fontWeight: fLeads ? 700 : 500, color: fLeads ? C.blue : C.ink }}>{fVal}{suffix}</td>
+          <td style={{ ...tdStyle, fontWeight: aLeads ? 700 : 500, color: aLeads ? C.blue : C.ink }}>{aVal}{suffix}</td>
+          <td style={{ ...tdStyle, fontSize: 12, color: C.gray }}>{tied ? "tied" : (fLeads ? "francisco" : "alec")}</td>
+        </tr>
+      );
+    }
+
+    // ---------- main ----------
+    function OutreachDashboard() {
+      const [entries, setEntries] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [status, setStatus] = useState("starting...");
+      const [lastRefresh, setLastRefresh] = useState(null);
+      const [cacheStatus, setCacheStatus] = useState(null);
+      const [view, setView] = useState("combined");
+      const [timeWindow, setTimeWindow] = useState("month");
+
+      async function refresh(forceFresh = false) {
+        setLoading(true);
+        setError(null);
+        setStatus(forceFresh ? "fetching fresh from attio..." : "loading...");
+        try {
+          const result = await fetchAllEntries(forceFresh);
+          setEntries(result.entries);
+          setLastRefresh(new Date(result.timestamp || Date.now()));
+          setCacheStatus(result.cache);
+          setStatus(`done · ${result.entries.length} leads`);
+          saveCache(result.entries, result.timestamp);
+        } catch (e) {
+          setError(e.message || "failed to fetch");
+          setStatus("error");
+        } finally {
+          setLoading(false);
+        }
+      }
+
+      useEffect(() => {
+        // try cache first, then fetch from server in background
+        const cached = loadCache();
+        if (cached?.entries?.length) {
+          setEntries(cached.entries);
+          setLastRefresh(new Date(cached.timestamp));
+          setLoading(false);
+        }
+        refresh(false);
+      }, []);
+
+      const ownerFiltered = useMemo(() => {
+        if (view === "combined") return entries;
+        const id = view === "francisco" ? FRANCISCO_ID : ALEC_ID;
+        return entries.filter(e => e.owner_id === id);
+      }, [entries, view]);
+
+      const winStart = useMemo(() => {
+        const now = new Date();
+        if (timeWindow === "week") return startOfWeek(now);
+        if (timeWindow === "month") return startOfMonth(now);
+        return startOfQuarter(now);
+      }, [timeWindow]);
+
+      const winLabel = timeWindow === "week" ? "this week" : timeWindow === "month" ? "this month" : "this quarter";
+
+      const winFiltered = useMemo(() =>
+        ownerFiltered.filter(e => { const d = parseEntryDate(e); return d && d >= winStart; }),
+        [ownerFiltered, winStart]
+      );
+
+      const total = ownerFiltered.length;
+      const addedInWindow = winFiltered.length;
+      const activeInCadence = ownerFiltered.filter(e => ACTIVE_STAGES.has(e.stage)).length;
+      const contactedInWindow = winFiltered.filter(isContacted).length;
+      const respondedInWindow = winFiltered.filter(isResponse).length;
+      const bookedInWindow = winFiltered.filter(isBooked).length;
+      const declinedInWindow = winFiltered.filter(isDeclined).length;
+      const responseRate = pct(respondedInWindow, contactedInWindow);
+      const bookRate = pct(bookedInWindow, contactedInWindow);
+
+      const funnel = useMemo(() => {
+        const contacted = winFiltered.filter(isContacted).length;
+        const responded = winFiltered.filter(isResponse).length;
+        const booked = winFiltered.filter(isBooked).length;
+        const proposal = winFiltered.filter(e => e.stage === "Proposal").length;
+        return [
+          { label: "contacted", count: contacted, pctOfPrev: 100 },
+          { label: "response", count: responded, pctOfPrev: pct(responded, contacted) },
+          { label: "meeting booked", count: booked, pctOfPrev: pct(booked, responded) },
+          { label: "proposal", count: proposal, pctOfPrev: pct(proposal, booked) }
+        ];
+      }, [winFiltered]);
+
+      const stageDistribution = useMemo(() => {
+        const counts = {};
+        STAGE_ORDER.forEach(s => counts[s] = 0);
+        ownerFiltered.forEach(e => { if (e.stage && counts.hasOwnProperty(e.stage)) counts[e.stage] += 1; });
+        return STAGE_ORDER.map(stage => ({ stage, count: counts[stage], category: STAGE_CATEGORY[stage] }));
+      }, [ownerFiltered]);
+
+      const maxStageCount = Math.max(1, ...stageDistribution.map(d => d.count));
+
+      function breakdownBy(field, options) {
+        return options.map(opt => {
+          const subset = winFiltered.filter(e => e[field] === opt);
+          const contacted = subset.filter(isContacted).length;
+          const responded = subset.filter(isResponse).length;
+          const booked = subset.filter(isBooked).length;
+          return { key: opt, volume: subset.length, sent: contacted, responseRate: pct(responded, contacted), bookRate: pct(booked, contacted), booked };
+        });
+      }
+
+      const leadTypeRows = useMemo(() => breakdownBy("lead_type", ["Cold Video", "Personal Connection", "LinkedIn Engager"]), [winFiltered]);
+      const formatRows = useMemo(() => breakdownBy("format", ["Video", "Email"]), [winFiltered]);
+
+      const timeSeries = useMemo(() => {
+        const now = new Date();
+        const buckets = [];
+        if (timeWindow === "quarter") {
+          const start = startOfWeek(winStart);
+          let cur = new Date(start);
+          while (cur <= now) {
+            const end = new Date(cur);
+            end.setDate(end.getDate() + 7);
+            buckets.push({ start: new Date(cur), end });
+            cur = end;
+          }
+        } else {
+          let cur = new Date(winStart);
+          while (cur <= now) {
+            const end = new Date(cur);
+            end.setDate(end.getDate() + 1);
+            buckets.push({ start: new Date(cur), end });
+            cur = end;
+          }
+        }
+        return buckets.map(b => {
+          const inB = winFiltered.filter(e => { const d = parseEntryDate(e); return d && d >= b.start && d < b.end; });
+          const fran = inB.filter(e => e.owner_id === FRANCISCO_ID).length;
+          const al = inB.filter(e => e.owner_id === ALEC_ID).length;
+          return { label: fmtDate(b.start), francisco: fran, alec: al, total: inB.length };
+        });
+      }, [winFiltered, timeWindow, winStart]);
+
+      const headToHead = useMemo(() => {
+        function statsFor(ownerId) {
+          const own = entries.filter(e => e.owner_id === ownerId);
+          const win = own.filter(e => { const d = parseEntryDate(e); return d && d >= winStart; });
+          const contacted = win.filter(isContacted).length;
+          const responded = win.filter(isResponse).length;
+          const booked = win.filter(isBooked).length;
+          const declined = win.filter(isDeclined).length;
+          return {
+            added: win.length,
+            active: own.filter(e => ACTIVE_STAGES.has(e.stage)).length,
+            sent: contacted, responseRate: pct(responded, contacted), bookRate: pct(booked, contacted), booked, declined
+          };
+        }
+        return { francisco: statsFor(FRANCISCO_ID), alec: statsFor(ALEC_ID) };
+      }, [entries, winStart]);
+
+      return (
+        <div style={{ minHeight: "100vh", padding: "32px 24px" }}>
+          <div style={{ maxWidth: 1200, margin: "0 auto" }}>
+            <div style={{ display: "flex", alignItems: "flex-end", justifyContent: "space-between", marginBottom: 28, flexWrap: "wrap", gap: 16 }}>
+              <div>
+                <Eyebrow>rallyup / outreach</Eyebrow>
+                <h1 style={{ fontSize: 40, fontWeight: 800, letterSpacing: "-0.03em", margin: "6px 0 0 0", lineHeight: 1.05 }}>
+                  outreach <span style={{ fontFamily: "'Instrument Serif', serif", fontStyle: "italic", fontWeight: 500 }}>performance</span>
+                </h1>
+                <div style={{ color: C.gray, fontSize: 14, marginTop: 6 }}>
+                  {lastRefresh
+                    ? (
+                      <React.Fragment>
+                        last refresh {lastRefresh.toLocaleTimeString()} · {entries.length} leads
+                        {cacheStatus === "hit" && <span style={{ color: C.gray, marginLeft: 8 }}>· cached</span>}
+                        {cacheStatus === "cron-refresh" && <span style={{ color: C.blue, marginLeft: 8 }}>· auto-refreshed</span>}
+                        {loading && <span style={{ marginLeft: 8 }}>· {status}</span>}
+                      </React.Fragment>
+                    )
+                    : (loading ? status : "loading...")}
+                </div>
+              </div>
+              <button onClick={() => refresh(true)} disabled={loading} style={{
+                display: "flex", alignItems: "center", gap: 8, background: C.ink, color: C.bg,
+                padding: "12px 20px", borderRadius: 999, border: "none", fontWeight: 600, fontSize: 14,
+                cursor: loading ? "wait" : "pointer", opacity: loading ? 0.7 : 1, fontFamily: "Inter"
+              }}>
+                {loading ? <LoaderIcon size={16} className="spin" /> : <RefreshIcon size={16} />}
+                {loading ? "refreshing" : "refresh"}
+              </button>
+            </div>
+
+            {error && (
+              <div style={{
+                background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 12,
+                padding: 16, marginBottom: 24, display: "flex", gap: 12, alignItems: "flex-start"
+              }}>
+                <AlertIcon size={20} style={{ color: "#dc2626", flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: "#991b1b" }}>refresh failed</div>
+                  <div style={{
+                    fontSize: 12, color: "#7f1d1d", marginTop: 6,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    whiteSpace: "pre-wrap", wordBreak: "break-word",
+                    background: "#fff", padding: 10, borderRadius: 6, border: "1px solid #fecaca"
+                  }}>{error}</div>
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 24, marginBottom: 28, flexWrap: "wrap" }}>
+              <div>
+                <Eyebrow>view</Eyebrow>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <Pill active={view === "combined"} onClick={() => setView("combined")}>combined</Pill>
+                  <Pill active={view === "alec"} onClick={() => setView("alec")}>alec</Pill>
+                  <Pill active={view === "francisco"} onClick={() => setView("francisco")}>francisco</Pill>
+                </div>
+              </div>
+              <div>
+                <Eyebrow>window</Eyebrow>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <Pill active={timeWindow === "week"} onClick={() => setTimeWindow("week")}>this week</Pill>
+                  <Pill active={timeWindow === "month"} onClick={() => setTimeWindow("month")}>this month</Pill>
+                  <Pill active={timeWindow === "quarter"} onClick={() => setTimeWindow("quarter")}>this quarter</Pill>
+                </div>
+              </div>
+            </div>
+
+            {loading && entries.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 80, color: C.gray }}>
+                <LoaderIcon size={32} className="spin" style={{ margin: "0 auto 16px", display: "block" }} />
+                <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, letterSpacing: "0.08em" }}>
+                  {status}
+                </div>
+              </div>
+            ) : (
+              <React.Fragment>
+                <div style={{
+                  display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))",
+                  gap: 12, marginBottom: 28
+                }}>
+                  <KpiCard label="total leads" value={total} sub="all time" />
+                  <KpiCard label={`added ${winLabel}`} value={addedInWindow} accent={C.blue} />
+                  <KpiCard label="active in cadence" value={activeInCadence} sub="current snapshot" />
+                  <KpiCard label="meetings booked" value={bookedInWindow} sub={winLabel} highlight={bookedInWindow > 0} />
+                  <KpiCard label="declined" value={declinedInWindow} sub={winLabel} />
+                  <KpiCard label="response rate" value={fmtPct(responseRate)} sub={`${respondedInWindow} of ${contactedInWindow} contacted`} />
+                  <KpiCard label="book rate" value={fmtPct(bookRate)} sub={`${bookedInWindow} of ${contactedInWindow} contacted`} />
+                </div>
+
+                <Card>
+                  <Eyebrow>funnel · {winLabel}</Eyebrow>
+                  <div style={{ display: "flex", gap: 12, marginTop: 16, flexWrap: "wrap" }}>
+                    {funnel.map((f, i) => (
+                      <div key={f.label} style={{ flex: 1, minWidth: 180 }}>
+                        <div style={{
+                          background: i === 0 ? C.ink : C.blue, color: C.bg, borderRadius: 12,
+                          padding: "20px 18px", opacity: f.count === 0 && i > 0 ? 0.4 : 1
+                        }}>
+                          <div style={{
+                            fontFamily: "'JetBrains Mono', monospace", fontSize: 10,
+                            letterSpacing: "0.12em", textTransform: "uppercase", opacity: 0.7
+                          }}>step {i + 1}</div>
+                          <div style={{ fontSize: 14, fontWeight: 500, marginTop: 4 }}>{f.label}</div>
+                          <div style={{ fontSize: 32, fontWeight: 800, lineHeight: 1, marginTop: 8 }}>{f.count}</div>
+                          {i > 0 && (
+                            <div style={{ fontSize: 11, marginTop: 6, opacity: 0.85 }}>
+                              {fmtPct(f.pctOfPrev)} of prev
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+
+                <div style={{ marginTop: 12 }}>
+                  <Card>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
+                      <Eyebrow>stage distribution · current snapshot</Eyebrow>
+                      <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.gray }}>
+                        <LegendDot color={CAT_COLOR.active} label="active" />
+                        <LegendDot color={CAT_COLOR.converted} label="converted" />
+                        <LegendDot color={CAT_COLOR.dead} label="dead" />
+                        <LegendDot color={CAT_COLOR.neutral} label="reconnect" />
+                      </div>
+                    </div>
+                    <div style={{ marginTop: 16, display: "flex", flexDirection: "column", gap: 6 }}>
+                      {stageDistribution.map(d => (
+                        <div key={d.stage} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{ width: 130, fontSize: 13, color: C.ink, flexShrink: 0 }}>{d.stage}</div>
+                          <div style={{ flex: 1, height: 22, background: C.bgSoft, borderRadius: 4 }}>
+                            <div style={{
+                              width: `${(d.count / maxStageCount) * 100}%`, height: "100%",
+                              background: CAT_COLOR[d.category], borderRadius: 4,
+                              minWidth: d.count > 0 ? 2 : 0, transition: "width 0.3s"
+                            }} />
+                          </div>
+                          <div style={{
+                            width: 32, textAlign: "right", fontFamily: "'JetBrains Mono', monospace",
+                            fontSize: 12, fontWeight: 500, color: C.ink
+                          }}>{d.count}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </Card>
+                </div>
+
+                <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 12 }}>
+                  <BreakdownCard title="lead type" rows={leadTypeRows} winLabel={winLabel} />
+                  <BreakdownCard title="format" rows={formatRows} winLabel={winLabel} />
+                </div>
+
+                <div style={{ marginTop: 12 }}>
+                  <Card>
+                    <Eyebrow>leads added over time · {winLabel}</Eyebrow>
+                    <div style={{ height: 240, marginTop: 16 }}>
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={timeSeries} margin={{ top: 10, right: 0, left: -20, bottom: 0 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke={C.border} vertical={false} />
+                          <XAxis dataKey="label" tick={{ fontSize: 11, fill: C.gray }} stroke={C.border} />
+                          <YAxis tick={{ fontSize: 11, fill: C.gray }} stroke={C.border} allowDecimals={false} />
+                          <Tooltip contentStyle={{ background: C.ink, border: "none", borderRadius: 8, color: C.bg, fontSize: 12 }} cursor={{ fill: C.bgSoft }} />
+                          {view === "combined" ? (
+                            <React.Fragment>
+                              <Legend wrapperStyle={{ fontSize: 12, paddingTop: 8 }} />
+                              <Bar dataKey="francisco" stackId="a" fill={C.blue} name="francisco" />
+                              <Bar dataKey="alec" stackId="a" fill={C.ink} name="alec" />
+                            </React.Fragment>
+                          ) : (
+                            <Bar dataKey="total" fill={view === "francisco" ? C.blue : C.ink} name={view} />
+                          )}
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </Card>
+                </div>
+
+                {view === "combined" && (
+                  <div style={{ marginTop: 12 }}>
+                    <Card>
+                      <Eyebrow>head to head · {winLabel}</Eyebrow>
+                      <table style={{ width: "100%", marginTop: 16 }}>
+                        <thead>
+                          <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                            <th style={thStyle}>metric</th>
+                            <th style={thStyle}>francisco</th>
+                            <th style={thStyle}>alec</th>
+                            <th style={thStyle}>leader</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <ComparisonRow label="leads added" f={headToHead.francisco.added} a={headToHead.alec.added} suffix="" higherIsBetter />
+                          <ComparisonRow label="active in cadence" f={headToHead.francisco.active} a={headToHead.alec.active} suffix="" higherIsBetter />
+                          <ComparisonRow label="response rate" f={headToHead.francisco.responseRate} a={headToHead.alec.responseRate} suffix="%" higherIsBetter format="pct" />
+                          <ComparisonRow label="book rate" f={headToHead.francisco.bookRate} a={headToHead.alec.bookRate} suffix="%" higherIsBetter format="pct" />
+                          <ComparisonRow label="meetings booked" f={headToHead.francisco.booked} a={headToHead.alec.booked} suffix="" higherIsBetter />
+                          <ComparisonRow label="declined" f={headToHead.francisco.declined} a={headToHead.alec.declined} suffix="" higherIsBetter={false} />
+                        </tbody>
+                      </table>
+                    </Card>
+                  </div>
+                )}
+
+                <div style={{
+                  textAlign: "center", marginTop: 32, fontSize: 11, color: C.gray,
+                  fontFamily: "'JetBrains Mono', monospace", letterSpacing: "0.08em"
+                }}>
+                  rallyup · powered by attio
+                </div>
+              </React.Fragment>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(<OutreachDashboard />);
+  </script>
+</body>
+</html>
