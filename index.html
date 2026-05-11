@@ -81,6 +81,12 @@
       "Personal Connection": "personal",
       "LinkedIn Engager": "warm"
     };
+    // Reverse map used by the lead-type drill-down filter.
+    const LEAD_TYPE_FROM_KEY = {
+      cold: "Cold Video",
+      personal: "Personal Connection",
+      warm: "LinkedIn Engager"
+    };
 
     const CAT_COLOR = {
       active: "#3d68f5", converted: "#0b1020", won: "#DDFF4D",
@@ -361,6 +367,7 @@
       const [cacheStatus, setCacheStatus] = useState(null);
       const [view, setView] = useState("combined");
       const [timeWindow, setTimeWindow] = useState("month");
+      const [leadType, setLeadType] = useState("all");
 
       async function refresh(forceFresh = false) {
         setLoading(true);
@@ -398,6 +405,12 @@
         return entries.filter(e => e.owner_id === id);
       }, [entries, view]);
 
+      const typeFiltered = useMemo(() => {
+        if (leadType === "all") return ownerFiltered;
+        const target = LEAD_TYPE_FROM_KEY[leadType];
+        return ownerFiltered.filter(e => e.lead_type === target);
+      }, [ownerFiltered, leadType]);
+
       const winStart = useMemo(() => {
         const now = new Date();
         if (timeWindow === "week") return startOfWeek(now);
@@ -408,13 +421,13 @@
       const winLabel = timeWindow === "week" ? "this week" : timeWindow === "month" ? "this month" : "this quarter";
 
       const winFiltered = useMemo(() =>
-        ownerFiltered.filter(e => { const d = parseEntryDate(e); return d && d >= winStart; }),
-        [ownerFiltered, winStart]
+        typeFiltered.filter(e => { const d = parseEntryDate(e); return d && d >= winStart; }),
+        [typeFiltered, winStart]
       );
 
-      const total = ownerFiltered.length;
+      const total = typeFiltered.length;
       const addedInWindow = winFiltered.length;
-      const activeInCadence = ownerFiltered.filter(e => ACTIVE_STAGES.has(e.stage)).length;
+      const activeInCadence = typeFiltered.filter(e => ACTIVE_STAGES.has(e.stage)).length;
       const contactedInWindow = winFiltered.filter(isContacted).length;
       const respondedInWindow = winFiltered.filter(isResponse).length;
       const bookedInWindow = winFiltered.filter(isBooked).length;
@@ -429,8 +442,8 @@
       // Data hygiene: leads whose current stage implies a booked meeting but the
       // checkbox was never set. These would silently distort funnel counts.
       const hygieneIssues = useMemo(
-        () => ownerFiltered.filter(needsBookingFlag),
-        [ownerFiltered]
+        () => typeFiltered.filter(needsBookingFlag),
+        [typeFiltered]
       );
 
       const funnel = useMemo(() => {
@@ -451,9 +464,9 @@
       const stageDistribution = useMemo(() => {
         const counts = {};
         STAGE_ORDER.forEach(s => counts[s] = 0);
-        ownerFiltered.forEach(e => { if (e.stage && counts.hasOwnProperty(e.stage)) counts[e.stage] += 1; });
+        typeFiltered.forEach(e => { if (e.stage && counts.hasOwnProperty(e.stage)) counts[e.stage] += 1; });
         return STAGE_ORDER.map(stage => ({ stage, count: counts[stage], category: STAGE_CATEGORY[stage] }));
-      }, [ownerFiltered]);
+      }, [typeFiltered]);
 
       const maxStageCount = Math.max(1, ...stageDistribution.map(d => d.count));
 
@@ -510,8 +523,10 @@
       }, [winFiltered, timeWindow, winStart]);
 
       const headToHead = useMemo(() => {
+        const typeVal = leadType === "all" ? null : LEAD_TYPE_FROM_KEY[leadType];
         function statsFor(ownerId) {
-          const own = entries.filter(e => e.owner_id === ownerId);
+          let own = entries.filter(e => e.owner_id === ownerId);
+          if (typeVal) own = own.filter(e => e.lead_type === typeVal);
           const win = own.filter(e => { const d = parseEntryDate(e); return d && d >= winStart; });
           const contacted = win.filter(isContacted).length;
           const responded = win.filter(isResponse).length;
@@ -531,7 +546,7 @@
           };
         }
         return { francisco: statsFor(FRANCISCO_ID), alec: statsFor(ALEC_ID) };
-      }, [entries, winStart]);
+      }, [entries, winStart, leadType]);
 
       return (
         <div style={{ minHeight: "100vh", padding: "32px 24px" }}>
@@ -632,6 +647,15 @@
                   <Pill active={timeWindow === "quarter"} onClick={() => setTimeWindow("quarter")}>this quarter</Pill>
                 </div>
               </div>
+              <div>
+                <Eyebrow>lead type</Eyebrow>
+                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                  <Pill active={leadType === "all"} onClick={() => setLeadType("all")}>all</Pill>
+                  <Pill active={leadType === "cold"} onClick={() => setLeadType("cold")}>cold</Pill>
+                  <Pill active={leadType === "personal"} onClick={() => setLeadType("personal")}>personal</Pill>
+                  <Pill active={leadType === "warm"} onClick={() => setLeadType("warm")}>warm</Pill>
+                </div>
+              </div>
             </div>
 
             {loading && entries.length === 0 ? (
@@ -719,15 +743,17 @@
                   </Card>
                 </div>
 
-                <div style={{ marginTop: 12 }}>
-                  <BreakdownCard
-                    title="lead type"
-                    rows={leadTypeRows}
-                    winLabel={winLabel}
-                    variant="extended"
-                    labelMap={LEAD_TYPE_DISPLAY}
-                  />
-                </div>
+                {leadType === "all" && (
+                  <div style={{ marginTop: 12 }}>
+                    <BreakdownCard
+                      title="lead type"
+                      rows={leadTypeRows}
+                      winLabel={winLabel}
+                      variant="extended"
+                      labelMap={LEAD_TYPE_DISPLAY}
+                    />
+                  </div>
+                )}
 
                 <div style={{ marginTop: 12 }}>
                   <BreakdownCard title="format" rows={formatRows} winLabel={winLabel} />
