@@ -47,19 +47,37 @@
 
     const STAGE_ORDER = [
       "Reconnect Needed", "Contacted", "Follow Up 1", "Follow Up 2", "Follow Up 3",
-      "Follow Up 4", "Nurture", "Cadence Complete", "Responded", "Booked a Call", "Proposal", "Declined"
+      "Follow Up 4", "Nurture", "Cadence Complete", "Responded", "Booked a Call",
+      "Proposal", "Closed Won", "Declined", "Closed Lost"
     ];
 
     const STAGE_CATEGORY = {
       "Reconnect Needed": "neutral",
       "Contacted": "active", "Follow Up 1": "active", "Follow Up 2": "active",
       "Follow Up 3": "active", "Follow Up 4": "active", "Nurture": "active",
-      "Cadence Complete": "dead", "Declined": "dead",
-      "Responded": "converted", "Booked a Call": "converted", "Proposal": "converted"
+      "Cadence Complete": "dead", "Declined": "dead", "Closed Lost": "dead",
+      "Responded": "converted", "Booked a Call": "converted", "Proposal": "converted",
+      "Closed Won": "won"
     };
 
+    // Stage progression rank (1-indexed). Used to interpret "ever reached stage X"
+    // when looking at terminal states like Closed Won / Closed Lost.
+    const STAGE_RANK = {
+      "Reconnect Needed": 0,
+      "Contacted": 1, "Follow Up 1": 1, "Follow Up 2": 1, "Follow Up 3": 1, "Follow Up 4": 1, "Nurture": 1,
+      "Cadence Complete": 1, "Declined": 1,
+      "Responded": 2,
+      "Booked a Call": 3,
+      "Proposal": 4, "Closed Lost": 4,
+      "Closed Won": 5
+    };
+
+    // Stages that imply a meeting was booked at some point (used for data-hygiene checks).
+    const POST_MEETING_STAGES = new Set(["Booked a Call", "Proposal", "Closed Won"]);
+
     const CAT_COLOR = {
-      active: "#3d68f5", converted: "#0b1020", dead: "#d4d4d8", neutral: "#9ca3af"
+      active: "#3d68f5", converted: "#0b1020", won: "#DDFF4D",
+      dead: "#d4d4d8", neutral: "#9ca3af"
     };
 
     const C = {
@@ -95,24 +113,40 @@
     function pct(n, d) { return !d ? 0 : (n / d) * 100; }
     function fmtPct(p) { return `${p.toFixed(1)}%`; }
 
-    // The `sent` checkbox in attio is unreliable. derive contact from stage.
+    // The `sent` checkbox in attio is unreliable. Derive contact from stage advancement —
+    // any stage past Reconnect Needed means outreach went out.
     function isContacted(entry) {
       if (entry.sent) return true;
       if (!entry.stage) return false;
       return entry.stage !== "Reconnect Needed";
     }
-    const RESPONDED_STAGES = new Set(["Responded", "Booked a Call", "Proposal", "Declined"]);
-    const BOOKED_STAGES = new Set(["Booked a Call", "Proposal"]);
+    // Strict: only what the team explicitly flagged. Stage-only inference caused
+    // mis-attribution (e.g. Francisco-owned Proposal showed up as his booking when
+    // Alec ran the meeting). The checkboxes are the single source of truth.
     function isResponse(entry) {
-      if (entry.response) return true;
-      return RESPONDED_STAGES.has(entry.stage);
+      return entry.response === true;
     }
     function isBooked(entry) {
-      if (entry.meeting_booked) return true;
-      return BOOKED_STAGES.has(entry.stage);
+      return entry.meeting_booked === true;
+    }
+    function isProposalSent(entry) {
+      // checkbox first, fall back to stage having reached Proposal+
+      if (entry.proposal_sent === true) return true;
+      return (STAGE_RANK[entry.stage] || 0) >= 4;
+    }
+    function isWon(entry) {
+      return entry.stage === "Closed Won";
+    }
+    function isLost(entry) {
+      return entry.stage === "Closed Lost";
     }
     function isDeclined(entry) {
       return entry.stage === "Declined";
+    }
+    // Surfaces entries that have advanced to a post-meeting stage but where the
+    // meeting_booked checkbox was never set — data hygiene gap.
+    function needsBookingFlag(entry) {
+      return POST_MEETING_STAGES.has(entry.stage) && entry.meeting_booked !== true;
     }
 
     // ---------- data fetching ----------
@@ -360,20 +394,33 @@
       const contactedInWindow = winFiltered.filter(isContacted).length;
       const respondedInWindow = winFiltered.filter(isResponse).length;
       const bookedInWindow = winFiltered.filter(isBooked).length;
+      const proposalsInWindow = winFiltered.filter(isProposalSent).length;
+      const wonInWindow = winFiltered.filter(isWon).length;
+      const lostInWindow = winFiltered.filter(isLost).length;
       const declinedInWindow = winFiltered.filter(isDeclined).length;
       const responseRate = pct(respondedInWindow, contactedInWindow);
       const bookRate = pct(bookedInWindow, contactedInWindow);
+      const closeRate = pct(wonInWindow, bookedInWindow);
+
+      // Data hygiene: leads whose current stage implies a booked meeting but the
+      // checkbox was never set. These would silently distort funnel counts.
+      const hygieneIssues = useMemo(
+        () => ownerFiltered.filter(needsBookingFlag),
+        [ownerFiltered]
+      );
 
       const funnel = useMemo(() => {
         const contacted = winFiltered.filter(isContacted).length;
         const responded = winFiltered.filter(isResponse).length;
         const booked = winFiltered.filter(isBooked).length;
-        const proposal = winFiltered.filter(e => e.stage === "Proposal").length;
+        const proposal = winFiltered.filter(isProposalSent).length;
+        const won = winFiltered.filter(isWon).length;
         return [
           { label: "contacted", count: contacted, pctOfPrev: 100 },
           { label: "response", count: responded, pctOfPrev: pct(responded, contacted) },
           { label: "meeting booked", count: booked, pctOfPrev: pct(booked, responded) },
-          { label: "proposal", count: proposal, pctOfPrev: pct(proposal, booked) }
+          { label: "proposal", count: proposal, pctOfPrev: pct(proposal, booked) },
+          { label: "closed won", count: won, pctOfPrev: pct(won, proposal) }
         ];
       }, [winFiltered]);
 
@@ -435,11 +482,18 @@
           const contacted = win.filter(isContacted).length;
           const responded = win.filter(isResponse).length;
           const booked = win.filter(isBooked).length;
+          const proposals = win.filter(isProposalSent).length;
+          const won = win.filter(isWon).length;
+          const lost = win.filter(isLost).length;
           const declined = win.filter(isDeclined).length;
           return {
             added: win.length,
             active: own.filter(e => ACTIVE_STAGES.has(e.stage)).length,
-            sent: contacted, responseRate: pct(responded, contacted), bookRate: pct(booked, contacted), booked, declined
+            sent: contacted,
+            responseRate: pct(responded, contacted),
+            bookRate: pct(booked, contacted),
+            closeRate: pct(won, booked),
+            booked, proposals, won, lost, declined
           };
         }
         return { francisco: statsFor(FRANCISCO_ID), alec: statsFor(ALEC_ID) };
@@ -495,6 +549,38 @@
               </div>
             )}
 
+            {hygieneIssues.length > 0 && (
+              <div style={{
+                background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 12,
+                padding: 16, marginBottom: 24, display: "flex", gap: 12, alignItems: "flex-start"
+              }}>
+                <AlertIcon size={20} style={{ color: "#b45309", flexShrink: 0, marginTop: 2 }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, color: "#92400e" }}>
+                    data hygiene · {hygieneIssues.length} {hygieneIssues.length === 1 ? "entry" : "entries"} in a post-meeting stage without the "meeting booked" checkbox
+                  </div>
+                  <div style={{ fontSize: 12, color: "#78350f", marginTop: 4 }}>
+                    these won't count toward your booking metrics until the checkbox is set in attio:
+                  </div>
+                  <div style={{
+                    fontSize: 12, color: "#78350f", marginTop: 8,
+                    fontFamily: "'JetBrains Mono', monospace",
+                    background: "#fff", padding: 10, borderRadius: 6, border: "1px solid #fde68a",
+                    maxHeight: 180, overflowY: "auto"
+                  }}>
+                    {hygieneIssues.slice(0, 20).map(e => (
+                      <div key={e.entry_id} style={{ padding: "2px 0" }}>
+                        · stage <b>{e.stage}</b> · owner {e.owner_id === FRANCISCO_ID ? "francisco" : e.owner_id === ALEC_ID ? "alec" : "?"} · entry {e.entry_id?.slice(0, 8)}
+                      </div>
+                    ))}
+                    {hygieneIssues.length > 20 && (
+                      <div style={{ padding: "4px 0", opacity: 0.7 }}>... and {hygieneIssues.length - 20} more</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             <div style={{ display: "flex", gap: 24, marginBottom: 28, flexWrap: "wrap" }}>
               <div>
                 <Eyebrow>view</Eyebrow>
@@ -530,10 +616,14 @@
                   <KpiCard label="total leads" value={total} sub="all time" />
                   <KpiCard label={`added ${winLabel}`} value={addedInWindow} accent={C.blue} />
                   <KpiCard label="active in cadence" value={activeInCadence} sub="current snapshot" />
-                  <KpiCard label="meetings booked" value={bookedInWindow} sub={winLabel} highlight={bookedInWindow > 0} />
+                  <KpiCard label="meetings booked" value={bookedInWindow} sub={winLabel} accent={C.blue} />
+                  <KpiCard label="proposals sent" value={proposalsInWindow} sub={winLabel} accent={C.blue} />
+                  <KpiCard label="closed won" value={wonInWindow} sub={winLabel} highlight={wonInWindow > 0} />
+                  <KpiCard label="closed lost" value={lostInWindow} sub={winLabel} />
                   <KpiCard label="declined" value={declinedInWindow} sub={winLabel} />
                   <KpiCard label="response rate" value={fmtPct(responseRate)} sub={`${respondedInWindow} of ${contactedInWindow} contacted`} />
                   <KpiCard label="book rate" value={fmtPct(bookRate)} sub={`${bookedInWindow} of ${contactedInWindow} contacted`} />
+                  <KpiCard label="close rate" value={fmtPct(closeRate)} sub={`${wonInWindow} of ${bookedInWindow} booked`} />
                 </div>
 
                 <Card>
@@ -566,10 +656,11 @@
                   <Card>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 }}>
                       <Eyebrow>stage distribution · current snapshot</Eyebrow>
-                      <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.gray }}>
+                      <div style={{ display: "flex", gap: 12, fontSize: 11, color: C.gray, flexWrap: "wrap" }}>
                         <LegendDot color={CAT_COLOR.active} label="active" />
-                        <LegendDot color={CAT_COLOR.converted} label="converted" />
-                        <LegendDot color={CAT_COLOR.dead} label="dead" />
+                        <LegendDot color={CAT_COLOR.converted} label="engaged" />
+                        <LegendDot color={CAT_COLOR.won} label="won" />
+                        <LegendDot color={CAT_COLOR.dead} label="lost" />
                         <LegendDot color={CAT_COLOR.neutral} label="reconnect" />
                       </div>
                     </div>
@@ -642,7 +733,11 @@
                           <ComparisonRow label="active in cadence" f={headToHead.francisco.active} a={headToHead.alec.active} suffix="" higherIsBetter />
                           <ComparisonRow label="response rate" f={headToHead.francisco.responseRate} a={headToHead.alec.responseRate} suffix="%" higherIsBetter format="pct" />
                           <ComparisonRow label="book rate" f={headToHead.francisco.bookRate} a={headToHead.alec.bookRate} suffix="%" higherIsBetter format="pct" />
+                          <ComparisonRow label="close rate" f={headToHead.francisco.closeRate} a={headToHead.alec.closeRate} suffix="%" higherIsBetter format="pct" />
                           <ComparisonRow label="meetings booked" f={headToHead.francisco.booked} a={headToHead.alec.booked} suffix="" higherIsBetter />
+                          <ComparisonRow label="proposals sent" f={headToHead.francisco.proposals} a={headToHead.alec.proposals} suffix="" higherIsBetter />
+                          <ComparisonRow label="closed won" f={headToHead.francisco.won} a={headToHead.alec.won} suffix="" higherIsBetter />
+                          <ComparisonRow label="closed lost" f={headToHead.francisco.lost} a={headToHead.alec.lost} suffix="" higherIsBetter={false} />
                           <ComparisonRow label="declined" f={headToHead.francisco.declined} a={headToHead.alec.declined} suffix="" higherIsBetter={false} />
                         </tbody>
                       </table>

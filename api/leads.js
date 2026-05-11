@@ -112,6 +112,7 @@ function parseEntry(raw) {
     sent: extractBool(v.sent),
     response: extractBool(v.response),
     meeting_booked: extractBool(v.meeting_booked),
+    proposal_sent: extractBool(v.proposal_sent),
     rejected_not_a_fit: extractBool(v.rejected_not_a_fit)
   };
 }
