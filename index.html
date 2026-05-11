@@ -75,6 +75,13 @@
     // Stages that imply a meeting was booked at some point (used for data-hygiene checks).
     const POST_MEETING_STAGES = new Set(["Booked a Call", "Proposal", "Closed Won"]);
 
+    // Friendly display names for the three lead types.
+    const LEAD_TYPE_DISPLAY = {
+      "Cold Video": "cold",
+      "Personal Connection": "personal",
+      "LinkedIn Engager": "warm"
+    };
+
     const CAT_COLOR = {
       active: "#3d68f5", converted: "#0b1020", won: "#DDFF4D",
       dead: "#d4d4d8", neutral: "#9ca3af"
@@ -281,7 +288,9 @@
       );
     }
 
-    function BreakdownCard({ title, rows, winLabel }) {
+    function BreakdownCard({ title, rows, winLabel, variant, labelMap }) {
+      const extended = variant === "extended";
+      const labelFor = (key) => (labelMap && labelMap[key]) || key.toLowerCase();
       return (
         <Card>
           <Eyebrow>{title} · {winLabel}</Eyebrow>
@@ -291,18 +300,33 @@
                 <th style={thStyle}></th>
                 <th style={thStyle}>volume</th>
                 <th style={thStyle}>contacted</th>
-                <th style={thStyle}>resp</th>
-                <th style={thStyle}>book</th>
+                <th style={thStyle}>resp %</th>
+                <th style={thStyle}>book %</th>
+                {extended && <th style={thStyle}>meet</th>}
+                {extended && <th style={thStyle}>won</th>}
+                {extended && <th style={thStyle}>close %</th>}
               </tr>
             </thead>
             <tbody>
               {rows.map(r => (
                 <tr key={r.key} style={{ borderBottom: `1px solid ${C.border}` }}>
-                  <td style={tdStyle}>{r.key.toLowerCase()}</td>
+                  <td style={tdStyle}>{labelFor(r.key)}</td>
                   <td style={tdStyle}>{r.volume}</td>
                   <td style={tdStyle}>{r.sent}</td>
                   <td style={{ ...tdStyle, fontWeight: 600 }}>{fmtPct(r.responseRate)}</td>
                   <td style={{ ...tdStyle, fontWeight: 600, color: r.bookRate > 0 ? C.blue : C.ink }}>{fmtPct(r.bookRate)}</td>
+                  {extended && <td style={tdStyle}>{r.booked}</td>}
+                  {extended && (
+                    <td style={{
+                      ...tdStyle,
+                      fontWeight: 700,
+                      background: r.won > 0 ? C.yellow : "transparent",
+                      borderRadius: r.won > 0 ? 4 : 0,
+                      paddingLeft: r.won > 0 ? 10 : 8,
+                      paddingRight: r.won > 0 ? 10 : 8
+                    }}>{r.won}</td>
+                  )}
+                  {extended && <td style={{ ...tdStyle, fontWeight: 600, color: r.closeRate > 0 ? C.ink : C.gray }}>{fmtPct(r.closeRate)}</td>}
                 </tr>
               ))}
             </tbody>
@@ -439,7 +463,17 @@
           const contacted = subset.filter(isContacted).length;
           const responded = subset.filter(isResponse).length;
           const booked = subset.filter(isBooked).length;
-          return { key: opt, volume: subset.length, sent: contacted, responseRate: pct(responded, contacted), bookRate: pct(booked, contacted), booked };
+          const won = subset.filter(isWon).length;
+          const lost = subset.filter(isLost).length;
+          return {
+            key: opt,
+            volume: subset.length,
+            sent: contacted,
+            responseRate: pct(responded, contacted),
+            bookRate: pct(booked, contacted),
+            closeRate: pct(won, booked),
+            booked, won, lost
+          };
         });
       }
 
@@ -685,8 +719,17 @@
                   </Card>
                 </div>
 
-                <div style={{ marginTop: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 12 }}>
-                  <BreakdownCard title="lead type" rows={leadTypeRows} winLabel={winLabel} />
+                <div style={{ marginTop: 12 }}>
+                  <BreakdownCard
+                    title="lead type"
+                    rows={leadTypeRows}
+                    winLabel={winLabel}
+                    variant="extended"
+                    labelMap={LEAD_TYPE_DISPLAY}
+                  />
+                </div>
+
+                <div style={{ marginTop: 12 }}>
                   <BreakdownCard title="format" rows={formatRows} winLabel={winLabel} />
                 </div>
 
