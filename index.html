@@ -436,6 +436,7 @@
       const responseRate = pct(respondedInWindow, contactedInWindow);
       const bookRate = pct(bookedInWindow, contactedInWindow);
       const closeRate = pct(wonInWindow, bookedInWindow);
+      const closeRateProposal = pct(wonInWindow, proposalsInWindow);
 
       // Data hygiene: leads whose current stage implies a booked meeting but the
       // checkbox was never set. These would silently distort funnel counts.
@@ -540,6 +541,7 @@
             responseRate: pct(responded, contacted),
             bookRate: pct(booked, contacted),
             closeRate: pct(won, booked),
+            closeRateProposal: pct(won, proposals),
             booked, proposals, won, lost, declined
           };
         }
@@ -679,7 +681,8 @@
                   <KpiCard label="declined" value={declinedInWindow} sub={winLabel} />
                   <KpiCard label="response rate" value={fmtPct(responseRate)} sub={`${respondedInWindow} of ${contactedInWindow} contacted`} />
                   <KpiCard label="book rate" value={fmtPct(bookRate)} sub={`${bookedInWindow} of ${contactedInWindow} contacted`} />
-                  <KpiCard label="close rate" value={fmtPct(closeRate)} sub={`${wonInWindow} of ${bookedInWindow} booked`} />
+                  <KpiCard label="close rate · from booked" value={fmtPct(closeRate)} sub={`${wonInWindow} of ${bookedInWindow} meetings`} />
+                  <KpiCard label="close rate · from proposal" value={fmtPct(closeRateProposal)} sub={`${wonInWindow} of ${proposalsInWindow} proposals`} />
                 </div>
 
                 <Card>
@@ -800,7 +803,8 @@
                           <ComparisonRow label="active in cadence" f={headToHead.francisco.active} a={headToHead.alec.active} suffix="" higherIsBetter />
                           <ComparisonRow label="response rate" f={headToHead.francisco.responseRate} a={headToHead.alec.responseRate} suffix="%" higherIsBetter format="pct" />
                           <ComparisonRow label="book rate" f={headToHead.francisco.bookRate} a={headToHead.alec.bookRate} suffix="%" higherIsBetter format="pct" />
-                          <ComparisonRow label="close rate" f={headToHead.francisco.closeRate} a={headToHead.alec.closeRate} suffix="%" higherIsBetter format="pct" />
+                          <ComparisonRow label="close rate (from booked)" f={headToHead.francisco.closeRate} a={headToHead.alec.closeRate} suffix="%" higherIsBetter format="pct" />
+                          <ComparisonRow label="close rate (from proposal)" f={headToHead.francisco.closeRateProposal} a={headToHead.alec.closeRateProposal} suffix="%" higherIsBetter format="pct" />
                           <ComparisonRow label="meetings booked" f={headToHead.francisco.booked} a={headToHead.alec.booked} suffix="" higherIsBetter />
                           <ComparisonRow label="proposals sent" f={headToHead.francisco.proposals} a={headToHead.alec.proposals} suffix="" higherIsBetter />
                           <ComparisonRow label="closed won" f={headToHead.francisco.won} a={headToHead.alec.won} suffix="" higherIsBetter />
