@@ -42,20 +42,19 @@
     const ALEC_ID = "259d4030-3af4-4936-a6c0-3d7c34c70cd1";
 
     const ACTIVE_STAGES = new Set([
-      "Contacted", "Follow Up 1", "Follow Up 2", "Follow Up 3", "Follow Up 4", "Nurture"
+      "Contacted", "Follow Up 1", "Follow Up 2", "Follow Up 3"
     ]);
 
     const STAGE_ORDER = [
       "Reconnect Needed", "Contacted", "Follow Up 1", "Follow Up 2", "Follow Up 3",
-      "Follow Up 4", "Nurture", "Cadence Complete", "Responded", "Booked a Call",
-      "Proposal", "Closed Won", "Declined", "Closed Lost"
+      "Responded", "Booked a Call", "Proposal", "Closed Won", "Declined", "Closed Lost"
     ];
 
     const STAGE_CATEGORY = {
       "Reconnect Needed": "neutral",
       "Contacted": "active", "Follow Up 1": "active", "Follow Up 2": "active",
-      "Follow Up 3": "active", "Follow Up 4": "active", "Nurture": "active",
-      "Cadence Complete": "dead", "Declined": "dead", "Closed Lost": "dead",
+      "Follow Up 3": "active",
+      "Declined": "dead", "Closed Lost": "dead",
       "Responded": "converted", "Booked a Call": "converted", "Proposal": "converted",
       "Closed Won": "won"
     };
@@ -64,8 +63,7 @@
     // when looking at terminal states like Closed Won / Closed Lost.
     const STAGE_RANK = {
       "Reconnect Needed": 0,
-      "Contacted": 1, "Follow Up 1": 1, "Follow Up 2": 1, "Follow Up 3": 1, "Follow Up 4": 1, "Nurture": 1,
-      "Cadence Complete": 1, "Declined": 1,
+      "Contacted": 1, "Follow Up 1": 1, "Follow Up 2": 1, "Follow Up 3": 1, "Declined": 1,
       "Responded": 2,
       "Booked a Call": 3,
       "Proposal": 4, "Closed Lost": 4,
